@@ -1,6 +1,7 @@
 containers/
 datasets/**/*.npy
 datasets/**/datasetfile
+wandb/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
