@@ -1,14 +1,4 @@
-import numpy as np
-import torch
-from torch.nn import CrossEntropyLoss
-from torch.optim import Adam, SGD
-from torch.nn.functional import one_hot
-from sharded import sizeOfShard, getShardHash, fetchShardBatch, fetchTestBatch
 import os
-from glob import glob
-from time import time
-import json
-
 import argparse
 
 parser = argparse.ArgumentParser()
@@ -75,6 +65,22 @@ parser.add_argument(
 )
 args = parser.parse_args()
 
+if args.train:
+    if os.path.exists("containers/{}/cache/shard-{}:{}.pt".format(
+                            args.container, args.shard, args.label
+                        )):
+        exit()
+
+import numpy as np
+import torch
+from torch.nn import CrossEntropyLoss
+from torch.optim import Adam, SGD
+from torch.nn.functional import one_hot
+from sharded import sizeOfShard, getShardHash, fetchShardBatch, fetchTestBatch
+from glob import glob
+from time import time
+import json
+
 # Import the architecture.
 from importlib import import_module
 
@@ -92,7 +98,12 @@ device = torch.device(
 )  # pylint: disable=no-member
 
 # Instantiate model and send to selected device.
-model = model_lib.Model(input_shape, nb_classes, dropout_rate=args.dropout_rate)
+if model_lib.Model:
+    model = model_lib.Model(input_shape, nb_classes, dropout_rate=args.dropout_rate)
+elif model_lib.model:
+    model = model_lib.model
+else:
+    raise "Unsupported model"
 model.to(device)
 
 # Instantiate loss and optimizer.
@@ -219,43 +230,18 @@ if args.train:
                     and epoch % args.chkpt_interval == args.chkpt_interval - 1
                 ):
                     # Save weights
-                    torch.save(
-                        model.state_dict(),
-                        "containers/{}/cache/{}_{}.pt".format(
-                            args.container, slice_hash, epoch
-                        ),
-                    )
+                    torch.save(model.state_dict(), f"containers/{args.container}/cache/{slice_hash}_{epoch}.pt")
 
                     # Save time
-                    with open(
-                        "containers/{}/times/{}_{}.time".format(
-                            args.container, slice_hash, epoch
-                        ),
-                        "w",
-                    ) as f:
+                    with open(f"containers/{args.container}/times/{slice_hash}_{epoch}.time","w") as f:
                         f.write("{}\n".format(train_time + elapsed_time))
 
                     # Remove previous checkpoint.
-                    if os.path.exists(
-                        "containers/{}/cache/{}_{}.pt".format(
-                            args.container, slice_hash, epoch - args.chkpt_interval
-                        )
-                    ):
-                        os.remove(
-                            "containers/{}/cache/{}_{}.pt".format(
-                                args.container, slice_hash, epoch - args.chkpt_interval
-                            )
-                        )
-                    if os.path.exists(
-                        "containers/{}/times/{}_{}.time".format(
-                            args.container, slice_hash, epoch - args.chkpt_interval
-                        )
-                    ):
-                        os.remove(
-                            "containers/{}/times/{}_{}.time".format(
-                                args.container, slice_hash, epoch - args.chkpt_interval
-                            )
-                        )
+                    if os.path.exists(f"containers/{args.container}/cache/{slice_hash}_{epoch - args.chkpt_interval}.pt"):
+                        os.remove(f"containers/{args.container}/cache/{slice_hash}_{epoch - args.chkpt_interval}.pt")
+
+                    if os.path.exists(f"containers/{args.container}/times/{slice_hash}_{epoch - args.chkpt_interval}.time"):
+                        os.remove(f"containers/{args.container}/times/{slice_hash}_{epoch - args.chkpt_interval}.time")
 
             # When training is complete, save slice.
             torch.save(
@@ -268,60 +254,26 @@ if args.train:
                 f.write("{}\n".format(train_time + elapsed_time))
 
             # Remove previous checkpoint.
-            if os.path.exists(
-                "containers/{}/cache/{}_{}.pt".format(
-                    args.container, slice_hash, args.epochs - args.chkpt_interval
-                )
-            ):
-                os.remove(
-                    "containers/{}/cache/{}_{}.pt".format(
-                        args.container, slice_hash, args.epochs - args.chkpt_interval
-                    )
-                )
-            if os.path.exists(
-                "containers/{}/times/{}_{}.time".format(
-                    args.container, slice_hash, args.epochs - args.chkpt_interval
-                )
-            ):
-                os.remove(
-                    "containers/{}/times/{}_{}.time".format(
-                        args.container, slice_hash, args.epochs - args.chkpt_interval
-                    )
-                )
+            if os.path.exists(f"containers/{args.container}/cache/{slice_hash}_{epoch - args.chkpt_interval}.pt"):
+                os.remove(f"containers/{args.container}/cache/{slice_hash}_{epoch - args.chkpt_interval}.pt")
+
+            if os.path.exists(f"containers/{args.container}/times/{slice_hash}_{epoch - args.chkpt_interval}.time"):
+                os.remove(f"containers/{args.container}/times/{slice_hash}_{epoch - args.chkpt_interval}.time")
 
             # If this is the last slice, create a symlink attached to it.
             if sl == args.slices - 1:
-                os.symlink(
-                    "{}.pt".format(slice_hash),
-                    "containers/{}/cache/shard-{}:{}.pt".format(
-                        args.container, args.shard, args.label
-                    ),
-                )
-                os.symlink(
-                    "{}.time".format(slice_hash),
-                    "containers/{}/times/shard-{}:{}.time".format(
-                        args.container, args.shard, args.label
-                    ),
-                )
+                os.symlink(f"{slice_hash}.pt",
+                    f"containers/{args.container}/cache/shard-{args.shard}:{args.label}.pt")
+                os.symlink(f"{slice_hash}.time",
+                    f"containers/{args.container}/times/shard-{args.shard}:{args.label}.time")
 
         elif sl == args.slices - 1:
-            os.symlink(
-                "{}.pt".format(slice_hash),
-                "containers/{}/cache/shard-{}:{}.pt".format(
-                    args.container, args.shard, args.label
-                ),
-            )
-            if not os.path.exists(
-                "containers/{}/times/shard-{}:{}.time".format(
-                    args.container, args.shard, args.label
-                )
-            ):
-                os.symlink(
-                    "null.time",
-                    "containers/{}/times/shard-{}:{}.time".format(
-                        args.container, args.shard, args.label
-                    ),
-                )
+            os.symlink(f"{slice_hash}.pt",
+                f"containers/{args.container}/cache/shard-{args.shard}:{args.label}.pt")
+            
+            if not os.path.exists(f"containers/{args.container}/times/shard-{args.shard}:{args.label}.time"):
+                os.symlink("null.time",
+                    f"containers/{args.container}/times/shard-{args.shard}:{args.label}.time")
 
 
 if args.test:

@@ -45,7 +45,7 @@ if args.shards != None:
                 for t in range(1, args.shards)
             ],
         )
-        np.save("containers/{}/splitfile.npy".format(args.container), partition)
+        np.save("containers/{}/splitfile.npy".format(args.container), np.array(partition, dtype=object))
         requests = np.array([[] for _ in range(args.shards)])
         np.save(
             "containers/{}/requestfile:{}.npy".format(args.container, args.label),
@@ -192,5 +192,5 @@ if args.requests != None:
         # Update requestfile.
         np.save(
             "containers/{}/requestfile:{}.npy".format(args.container, args.label),
-            np.array(requests),
+            np.array(requests, dtype=object),
         )

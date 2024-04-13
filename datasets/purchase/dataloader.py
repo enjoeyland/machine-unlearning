@@ -15,6 +15,7 @@ y_train = train_data['y'].astype(np.int64)
 y_test = test_data['y'].astype(np.int64)
 
 def load(indices, category='train'):
+    indices = indices.astype(int)
     if category == 'train':
         return X_train[indices], y_train[indices]
     elif category == 'test':
