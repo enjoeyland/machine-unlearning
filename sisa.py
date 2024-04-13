@@ -194,7 +194,7 @@ if args.train:
             for epoch in range(start_epoch, slice_epochs):
                 epoch_start_time = time()
 
-                for images, labels in fetchShardBatch(
+                for inputs, labels in fetchShardBatch(
                     args.container,
                     args.label,
                     args.shard,
@@ -204,17 +204,13 @@ if args.train:
                 ):
 
                     # Convert data to torch format and send to selected device.
-                    gpu_images = torch.from_numpy(images).to(
-                        device
-                    )  # pylint: disable=no-member
-                    gpu_labels = torch.from_numpy(labels).to(
-                        device
-                    )  # pylint: disable=no-member
+                    gpu_inputs = torch.from_numpy(inputs).to(device)  # pylint: disable=no-member
+                    gpu_labels = torch.from_numpy(labels).to(device)  # pylint: disable=no-member
 
                     forward_start_time = time()
 
                     # Perform basic training step.
-                    logits = model(gpu_images)
+                    logits = model(gpu_inputs)
                     loss = loss_fn(logits, gpu_labels)
 
                     optimizer.zero_grad()
@@ -288,21 +284,21 @@ if args.test:
 
     # Compute predictions batch per batch.
     outputs = np.empty((0, nb_classes))
-    for images, _ in fetchTestBatch(args.dataset, args.batch_size):
+    for inputs, _ in fetchTestBatch(args.dataset, args.batch_size):
         # Convert data to torch format and send to selected device.
-        gpu_images = torch.from_numpy(images).to(device)  # pylint: disable=no-member
+        gpu_inputs = torch.from_numpy(inputs).to(device)  # pylint: disable=no-member
 
         if args.output_type == "softmax":
             # Actual batch prediction.
-            logits = model(gpu_images)
-            predictions = softmax(logits, dim=1).to("cpu")  # Send back to cpu.
-
+            logits = model(gpu_inputs)
+            predictions = torch.softmax(logits, dim=1).to("cpu")  # Send back to cpu.
+        
             # Convert back to numpy and concatenate with previous batches.
             outputs = np.concatenate((outputs, predictions.numpy()))
 
         else:
             # Actual batch prediction.
-            logits = model(gpu_images)
+            logits = model(gpu_inputs)
             predictions = torch.argmax(logits, dim=1)  # pylint: disable=no-member
 
             # Convert to one hot, send back to cpu, convert back to numpy and concatenate with previous batches.
