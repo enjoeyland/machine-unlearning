@@ -13,8 +13,8 @@ parser.add_argument("--container", help="Name of the container")
 parser.add_argument("--shards", type=int, default=1, help="Number of shards, default 1")
 parser.add_argument(
     "--dataset",
-    default="datasets/purchase/datasetfile",
-    help="Location of the datasetfile, default datasets/purchase/datasetfile",
+    default="data/purchase/datasetfile",
+    help="Location of the datasetfile, default data/purchase/datasetfile",
 )
 parser.add_argument(
     "--baseline", type=int, help="Use only the specified shard (lone shard baseline)"

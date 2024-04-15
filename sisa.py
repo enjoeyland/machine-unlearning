@@ -48,8 +48,8 @@ parser.add_argument(
 )
 parser.add_argument(
     "--dataset",
-    default="datasets/purchase/datasetfile",
-    help="Location of the datasetfile, default datasets/purchase/datasetfile",
+    default="data/purchase/datasetfile",
+    help="Location of the datasetfile, default data/purchase/datasetfile",
 )
 
 parser.add_argument(

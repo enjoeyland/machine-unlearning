@@ -1,4 +1,4 @@
-Before the first time running experiments on purchase dataset or to customize number of labels used, please run `prepare_data.py` at `machine-unlearning/datasets/purchase`.
+Before the first time running experiments on purchase dataset or to customize number of labels used, please run `prepare_data.py` at `machine-unlearning/data/xnli-en`.
 
 The following scripts allow to run a sharding experiment on purchase dataset.
 

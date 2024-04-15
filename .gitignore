@@ -1,6 +1,6 @@
 containers/
-datasets/**/*.npy
-datasets/**/datasetfile
+data/**/*.npy
+data/**/datasetfile
 wandb/
 
 # Byte-compiled / optimized / DLL files

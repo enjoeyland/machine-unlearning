@@ -25,8 +25,8 @@ parser.add_argument(
 parser.add_argument("--container", default="default", help="Name of the container")
 parser.add_argument(
     "--dataset",
-    default="datasets/purchase/datasetfile",
-    help="Location of the datasetfile, default datasets/purchase/datasetfile",
+    default="data/purchase/datasetfile",
+    help="Location of the datasetfile, default data/purchase/datasetfile",
 )
 parser.add_argument("--label", default="latest", help="Label, default latest")
 args = parser.parse_args()
