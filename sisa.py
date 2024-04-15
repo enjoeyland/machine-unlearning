@@ -76,7 +76,7 @@ import torch
 from torch.nn import CrossEntropyLoss
 from torch.optim import Adam, SGD
 from torch.nn.functional import one_hot
-from sharded import sizeOfShard, getShardHash, fetchShardBatch, fetchTestBatch
+from sharded import sizeOfShard, getShardHash, fetchShardBatch, fetchTestBatch, fetchShardBatch2
 from glob import glob
 from time import time
 import json
@@ -98,13 +98,13 @@ device = torch.device(
 )  # pylint: disable=no-member
 
 # Instantiate model and send to selected device.
-if model_lib.Model:
-    model = model_lib.Model(input_shape, nb_classes, dropout_rate=args.dropout_rate)
-elif model_lib.model:
-    model = model_lib.model
+if hasattr(model_lib, 'Model'):
+    model = model_lib.Model(input_shape, nb_classes, dropout_rate=args.dropout_rate).to(device)
+elif hasattr(model_lib, 'model'):
+    model = model_lib.model.to(device)
+    tokenizer = model_lib.tokenizer
 else:
     raise "Unsupported model"
-model.to(device)
 
 # Instantiate loss and optimizer.
 loss_fn = CrossEntropyLoss()
@@ -194,31 +194,61 @@ if args.train:
             for epoch in range(start_epoch, slice_epochs):
                 epoch_start_time = time()
 
-                for inputs, labels in fetchShardBatch(
-                    args.container,
-                    args.label,
-                    args.shard,
-                    args.batch_size,
-                    args.dataset,
-                    until=(sl + 1) * slice_size if sl < args.slices - 1 else None,
-                ):
+                if hasattr(model_lib, 'Model'):
+                
+                    for inputs, labels in fetchShardBatch(
+                        args.container,
+                        args.label,
+                        args.shard,
+                        args.batch_size,
+                        args.dataset,
+                        until=(sl + 1) * slice_size if sl < args.slices - 1 else None,
+                    ):
 
-                    # Convert data to torch format and send to selected device.
-                    gpu_inputs = torch.from_numpy(inputs).to(device)  # pylint: disable=no-member
-                    gpu_labels = torch.from_numpy(labels).to(device)  # pylint: disable=no-member
+                        # Convert data to torch format and send to selected device.
+                        gpu_inputs = torch.from_numpy(inputs).to(device)  # pylint: disable=no-member
+                        gpu_labels = torch.from_numpy(labels).to(device)  # pylint: disable=no-member
 
-                    forward_start_time = time()
+                        forward_start_time = time()
 
-                    # Perform basic training step.
-                    logits = model(gpu_inputs)
-                    loss = loss_fn(logits, gpu_labels)
+                        # Perform basic training step.
+                        logits = model(gpu_inputs)
+                        loss = loss_fn(logits, gpu_labels)
 
-                    optimizer.zero_grad()
-                    loss.backward()
+                        optimizer.zero_grad()
+                        loss.backward()
 
-                    optimizer.step()
+                        optimizer.step()
 
-                    train_time += time() - forward_start_time
+                        train_time += time() - forward_start_time
+                else:
+                    accum_iter = 32 // args.batch_size
+                    batch_idx = 0
+                    for inputs in fetchShardBatch2(
+                        args.container,
+                        args.label,
+                        args.shard,
+                        args.batch_size,
+                        tokenizer,
+                        args.dataset,
+                        until=(sl + 1) * slice_size if sl < args.slices - 1 else None,
+                    ):
+                        forward_start_time = time()
+
+                        # Perform basic training step.
+                        gpu_inputs = {key: value.to(device) for key, value in inputs.items()}
+
+                        logits = model(**gpu_inputs)
+                        loss = logits.loss / accum_iter
+                        loss.backward()
+
+                        if (batch_idx + 1) % accum_iter == 0:
+                            optimizer.step()
+                            optimizer.zero_grad()
+
+                        train_time += time() - forward_start_time
+                    else:
+                        optimizer.step()
 
                 # Create a checkpoint every chkpt_interval.
                 if (

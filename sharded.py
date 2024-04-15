@@ -34,6 +34,31 @@ def getShardHash(container, label, shard, until=None):
     string_of_indices = ':'.join(indices.astype(str))
     return sha256(string_of_indices.encode()).hexdigest()
 
+def fetchShardBatch2(container, label, shard, batch_size, tokenizer, dataset, offset=0, until=None):
+    '''
+    Generator returning batches of points in the shard that are not in the requests
+    with specified batch_size from the specified dataset
+    optionnally located between offset and until (slicing).
+    '''
+    shards = np.load('containers/{}/splitfile.npy'.format(container), allow_pickle=True)
+    requests = np.load('containers/{}/requestfile:{}.npy'.format(container, label), allow_pickle=True)
+    
+    with open(dataset) as f:
+        datasetfile = json.loads(f.read())
+    dataloader = importlib.import_module('.'.join(dataset.split('/')[:-1] + [datasetfile['dataloader']]))
+    dataloader = dataloader.get_dataloader(tokenizer, max_length=datasetfile['input_shape'][0], category='train')
+    if until == None or until > shards[shard].shape[0]:
+        until = shards[shard].shape[0]
+
+    limit = offset
+    while limit <= until - batch_size:
+        limit += batch_size
+        indices = np.setdiff1d(shards[shard][limit-batch_size:limit], requests[shard])
+        yield dataloader[indices]
+    if limit < until:
+        indices = np.setdiff1d(shards[shard][limit:until], requests[shard])
+        yield dataloader[indices]
+
 def fetchShardBatch(container, label, shard, batch_size, dataset, offset=0, until=None):
     '''
     Generator returning batches of points in the shard that are not in the requests
