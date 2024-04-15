@@ -76,10 +76,11 @@ import torch
 from torch.nn import CrossEntropyLoss
 from torch.optim import Adam, SGD
 from torch.nn.functional import one_hot
-from sharded import sizeOfShard, getShardHash, fetchShardBatch, fetchTestBatch, fetchShardBatch2
+from sharded import sizeOfShard, getShardHash, fetchShardBatch, fetchTestBatch, get_data_loader
 from glob import glob
 from time import time
 import json
+from tqdm import tqdm
 
 # Import the architecture.
 from importlib import import_module
@@ -93,9 +94,7 @@ input_shape = tuple(datasetfile["input_shape"])
 nb_classes = datasetfile["nb_classes"]
 
 # Use GPU if available.
-device = torch.device(
-    "cuda:0" if torch.cuda.is_available() else "cpu"
-)  # pylint: disable=no-member
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")  # pylint: disable=no-member
 
 # Instantiate model and send to selected device.
 if hasattr(model_lib, 'Model'):
@@ -118,68 +117,40 @@ else:
 if args.train:
     shard_size = sizeOfShard(args.container, args.shard)
     slice_size = shard_size // args.slices
-    avg_epochs_per_slice = (
-        2 * args.slices / (args.slices + 1) * args.epochs / args.slices
-    )
+    avg_epochs_per_slice = (2 * args.slices / (args.slices + 1) * args.epochs / args.slices)
     loaded = False
 
     for sl in range(args.slices):
         # Get slice hash using sharded lib.
-        slice_hash = getShardHash(
-            args.container, args.label, args.shard, until=(sl + 1) * slice_size
-        )
+        slice_hash = getShardHash(args.container, args.label, args.shard, until=(sl + 1) * slice_size)
 
         # If checkpoints exists, skip the slice.
-        if not os.path.exists(
-            "containers/{}/cache/{}.pt".format(args.container, slice_hash)
-        ):
+        if not os.path.exists(f"containers/{args.container}/cache/{slice_hash}.pt"):
             # Initialize state.
             elapsed_time = 0
             start_epoch = 0
-            slice_epochs = int((sl + 1) * avg_epochs_per_slice) - int(
-                sl * avg_epochs_per_slice
-            )
+            slice_epochs = int((sl + 1) * avg_epochs_per_slice) - int(sl * avg_epochs_per_slice)
 
             # If weights are already in memory (from previous slice), skip loading.
             if not loaded:
                 # Look for a recovery checkpoint for the slice.
-                recovery_list = glob(
-                    "containers/{}/cache/{}_*.pt".format(args.container, slice_hash)
-                )
+                recovery_list = glob(f"containers/{args.container}/cache/{slice_hash}_*.pt")
                 if len(recovery_list) > 0:
-                    print(
-                        "Recovery mode for shard {} on slice {}".format(args.shard, sl)
-                    )
+                    print(f"Recovery checkpoint found for shard {args.shard} on slice {sl}")
 
                     # Load weights.
                     model.load_state_dict(torch.load(recovery_list[0]))
-                    start_epoch = int(
-                        recovery_list[0].split("/")[-1].split(".")[0].split("_")[1]
-                    )
+                    start_epoch = int(recovery_list[0].split("/")[-1].split(".")[0].split("_")[1])
 
                     # Load time
-                    with open(
-                        "containers/{}/times/{}_{}.time".format(
-                            args.container, slice_hash, start_epoch
-                        ),
-                        "r",
-                    ) as f:
+                    with open(f"containers/{args.container}/times/{slice_hash}_{start_epoch}.time","r") as f:
                         elapsed_time = float(f.read())
 
                 # If there is no recovery checkpoint and this slice is not the first, load previous slice.
                 elif sl > 0:
-                    previous_slice_hash = getShardHash(
-                        args.container, args.label, args.shard, until=sl * slice_size
-                    )
-
+                    previous_slice_hash = getShardHash(args.container, args.label, args.shard, until=sl * slice_size)
                     # Load weights.
-                    model.load_state_dict(
-                        torch.load(
-                            "containers/{}/cache/{}.pt".format(
-                                args.container, previous_slice_hash
-                            )
-                        )
-                    )
+                    model.load_state_dict(torch.load(f"containers/{args.container}/cache/{previous_slice_hash}.pt"))
 
                 # Mark model as loaded for next slices.
                 loaded = True
@@ -191,11 +162,11 @@ if args.train:
             # Actual training.
             train_time = 0.0
 
+            accum_iter = 32 // args.batch_size if args.batch_size < 32 else 1
             for epoch in range(start_epoch, slice_epochs):
                 epoch_start_time = time()
 
                 if hasattr(model_lib, 'Model'):
-                
                     for inputs, labels in fetchShardBatch(
                         args.container,
                         args.label,
@@ -222,9 +193,7 @@ if args.train:
 
                         train_time += time() - forward_start_time
                 else:
-                    accum_iter = 32 // args.batch_size
-                    batch_idx = 0
-                    for inputs in fetchShardBatch2(
+                    dataloader = get_data_loader(
                         args.container,
                         args.label,
                         args.shard,
@@ -232,29 +201,23 @@ if args.train:
                         tokenizer,
                         args.dataset,
                         until=(sl + 1) * slice_size if sl < args.slices - 1 else None,
-                    ):
+                    )
+                    for batch_idx, inputs in enumerate(tqdm(dataloader)):
                         forward_start_time = time()
 
                         # Perform basic training step.
-                        gpu_inputs = {key: value.to(device) for key, value in inputs.items()}
-
-                        logits = model(**gpu_inputs)
+                        logits = model(**dict(inputs.to(device)))
                         loss = logits.loss / accum_iter
                         loss.backward()
 
-                        if (batch_idx + 1) % accum_iter == 0:
+                        if (batch_idx + 1) % accum_iter == 0 or batch_idx + 1 == len(dataloader):
                             optimizer.step()
                             optimizer.zero_grad()
 
                         train_time += time() - forward_start_time
-                    else:
-                        optimizer.step()
 
                 # Create a checkpoint every chkpt_interval.
-                if (
-                    args.chkpt_interval != -1
-                    and epoch % args.chkpt_interval == args.chkpt_interval - 1
-                ):
+                if (args.chkpt_interval != -1 and epoch % args.chkpt_interval == args.chkpt_interval - 1):
                     # Save weights
                     torch.save(model.state_dict(), f"containers/{args.container}/cache/{slice_hash}_{epoch}.pt")
 
@@ -270,14 +233,9 @@ if args.train:
                         os.remove(f"containers/{args.container}/times/{slice_hash}_{epoch - args.chkpt_interval}.time")
 
             # When training is complete, save slice.
-            torch.save(
-                model.state_dict(),
-                "containers/{}/cache/{}.pt".format(args.container, slice_hash),
-            )
-            with open(
-                "containers/{}/times/{}.time".format(args.container, slice_hash), "w"
-            ) as f:
-                f.write("{}\n".format(train_time + elapsed_time))
+            torch.save(model.state_dict(), f"containers/{args.container}/cache/{slice_hash}.pt")
+            with open(f"containers/{args.container}/times/{slice_hash}.time", "w") as f:
+                f.write(f"{train_time + elapsed_time}\n")
 
             # Remove previous checkpoint.
             if os.path.exists(f"containers/{args.container}/cache/{slice_hash}_{epoch - args.chkpt_interval}.pt"):
@@ -304,13 +262,7 @@ if args.train:
 
 if args.test:
     # Load model weights from shard checkpoint (last slice).
-    model.load_state_dict(
-        torch.load(
-            "containers/{}/cache/shard-{}:{}.pt".format(
-                args.container, args.shard, args.label
-            )
-        )
-    )
+    model.load_state_dict(torch.load(f"containers/{args.conatainer}/cache/shard-{args.shard}:{args.label}.pt"))
 
     # Compute predictions batch per batch.
     outputs = np.empty((0, nb_classes))
@@ -337,9 +289,4 @@ if args.test:
 
     # Save outputs in numpy format.
     outputs = np.array(outputs)
-    np.save(
-        "containers/{}/outputs/shard-{}:{}.npy".format(
-            args.container, args.shard, args.label
-        ),
-        outputs,
-    )
+    np.save(f"containers/{args.container}/outputs/shard-{args.shard}:{args.label}.npy", outputs)

@@ -3,34 +3,35 @@ from hashlib import sha256
 import importlib
 import json
 
+def get_shard(container, shard):
+    return np.load(f'containers/{container}/splitfile.npy', allow_pickle=True)[shard]
+
+def get_request(container, label, shard):
+    return np.load(f'containers/{container}/requestfile:{label}.npy', allow_pickle=True)[shard]
+
 def sizeOfShard(container, shard):
     '''
     Returns the size (in number of points) of the shard before any unlearning request.
     '''
-    shards = np.load('containers/{}/splitfile.npy'.format(container), allow_pickle=True)
-    
-    return shards[shard].shape[0]
+    return get_shard(container, shard).shape[0]
 
 def realSizeOfShard(container, label, shard):
     '''
     Returns the actual size of the shard (including unlearning requests).
     '''
-    shards = np.load('containers/{}/splitfile.npy'.format(container), allow_pickle=True)
-    requests = np.load('containers/{}/requestfile:{}.npy'.format(container, label), allow_pickle=True)
-    
-    return shards[shard].shape[0] - requests[shard].shape[0]
+    return sizeOfShard(container, shard) - get_request(container, label, shard).shape[0]
 
 def getShardHash(container, label, shard, until=None):
     '''
     Returns a hash of the indices of the points in the shard lower than until
     that are not in the requests (separated by :).
     '''
-    shards = np.load('containers/{}/splitfile.npy'.format(container), allow_pickle=True)
-    requests = np.load('containers/{}/requestfile:{}.npy'.format(container, label), allow_pickle=True)
+    _shard = get_shard(container, shard)
+    request = get_request(container, label, shard)
 
     if until == None:
-        until = shards[shard].shape[0]
-    indices = np.setdiff1d(shards[shard][:until], requests[shard])
+        until = _shard.shape[0]
+    indices = np.setdiff1d(_shard[:until], request)
     string_of_indices = ':'.join(indices.astype(str))
     return sha256(string_of_indices.encode()).hexdigest()
 
@@ -40,23 +41,24 @@ def fetchShardBatch2(container, label, shard, batch_size, tokenizer, dataset, of
     with specified batch_size from the specified dataset
     optionnally located between offset and until (slicing).
     '''
-    shards = np.load('containers/{}/splitfile.npy'.format(container), allow_pickle=True)
-    requests = np.load('containers/{}/requestfile:{}.npy'.format(container, label), allow_pickle=True)
+    _shard = get_shard(container, shard)
+    request = get_request(container, label, shard)
     
     with open(dataset) as f:
         datasetfile = json.loads(f.read())
     dataloader = importlib.import_module('.'.join(dataset.split('/')[:-1] + [datasetfile['dataloader']]))
     dataloader = dataloader.get_dataloader(tokenizer, max_length=datasetfile['input_shape'][0], category='train')
-    if until == None or until > shards[shard].shape[0]:
-        until = shards[shard].shape[0]
+
+    if until == None or until > _shard.shape[0]:
+        until = _shard.shape[0]
 
     limit = offset
     while limit <= until - batch_size:
         limit += batch_size
-        indices = np.setdiff1d(shards[shard][limit-batch_size:limit], requests[shard])
+        indices = np.setdiff1d(_shard[limit-batch_size:limit], request)
         yield dataloader[indices]
     if limit < until:
-        indices = np.setdiff1d(shards[shard][limit:until], requests[shard])
+        indices = np.setdiff1d(_shard[limit:until], request)
         yield dataloader[indices]
 
 def fetchShardBatch(container, label, shard, batch_size, dataset, offset=0, until=None):
@@ -65,22 +67,22 @@ def fetchShardBatch(container, label, shard, batch_size, dataset, offset=0, unti
     with specified batch_size from the specified dataset
     optionnally located between offset and until (slicing).
     '''
-    shards = np.load('containers/{}/splitfile.npy'.format(container), allow_pickle=True)
-    requests = np.load('containers/{}/requestfile:{}.npy'.format(container, label), allow_pickle=True)
+    _shard = get_shard(container, shard)
+    request = get_request(container, label, shard)
     
     with open(dataset) as f:
         datasetfile = json.loads(f.read())
     dataloader = importlib.import_module('.'.join(dataset.split('/')[:-1] + [datasetfile['dataloader']]))
-    if until == None or until > shards[shard].shape[0]:
-        until = shards[shard].shape[0]
+    if until == None or until > _shard.shape[0]:
+        until = _shard.shape[0]
 
     limit = offset
     while limit <= until - batch_size:
         limit += batch_size
-        indices = np.setdiff1d(shards[shard][limit-batch_size:limit], requests[shard])
+        indices = np.setdiff1d(_shard[limit-batch_size:limit], request)
         yield dataloader.load(indices)
     if limit < until:
-        indices = np.setdiff1d(shards[shard][limit:until], requests[shard])
+        indices = np.setdiff1d(_shard[limit:until], request)
         yield dataloader.load(indices)
 
 def fetchTestBatch(dataset, batch_size):
@@ -98,3 +100,38 @@ def fetchTestBatch(dataset, batch_size):
         yield dataloader.load(np.arange(limit - batch_size, limit), category='test')
     if limit < datasetfile['nb_test']:
         yield dataloader.load(np.arange(limit, datasetfile['nb_test']), category='test')
+
+
+from torch.utils.data import Dataset, DataLoader
+
+class ShardDataset(Dataset):
+    def __init__(self, container, label, shard, tokenizer, dataset_path, offset=0, until=None):
+        self.shard = get_shard(container, shard)
+        self.request = get_request(container, label, shard)
+
+        with open(dataset_path) as f:
+            datasetfile = json.loads(f.read())
+
+        dataloader_module = importlib.import_module('.'.join(dataset_path.split('/')[:-1] + [datasetfile['dataloader']]))
+        self.dataloader = dataloader_module.get_dataloader(tokenizer, max_length=datasetfile['input_shape'][0], category='train')
+
+        self.offset = offset
+        self.until = until if until is not None else self.shard.shape[0]
+
+    def __len__(self):
+        return self.until - self.offset
+
+    def __getitem__(self, idx):
+        actual_idx = self.offset + idx
+        if actual_idx >= self.until:
+            raise IndexError("Index out of the bounds of the data segment.")
+        index = np.setdiff1d(self.shard[actual_idx], self.request)
+        if len(index) > 0:
+            return self.dataloader[index]
+        else:
+            return None
+
+def get_data_loader(container, label, shard, batch_size, tokenizer, dataset_path, offset=0, until=None):
+    dataset = ShardDataset(container, label, shard, tokenizer, dataset_path, offset, until)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)  # shuffle을 True로 설정할 수도 있음
+    return loader

@@ -1,8 +1,7 @@
 import torch
-import os
-import numpy as np
 from datasets import load_dataset
 from torch.utils.data import Dataset
+from transformers import BatchEncoding
 
 class XNLIDataset(Dataset):
     def __init__(self, tokenizer, data, max_length=256):
@@ -15,7 +14,8 @@ class XNLIDataset(Dataset):
         self.encodings['decoder_input_ids'] = decoder_input_ids
 
     def __getitem__(self, idx):
-        return {key: val[idx] for key, val in self.encodings.items()}
+        item  = {key: val[idx].squeeze() for key, val in self.encodings.items()}
+        return BatchEncoding(data=item, tensor_type='pt')
 
     def __len__(self):
         return len(self.encodings.input_ids)
@@ -28,14 +28,18 @@ def get_dataloader(tokenizer, max_length=256, category='train'):
 
 if __name__ == "__main__":
     from transformers import AutoTokenizer
-    checkpoint = "google/mt5-small"
+    checkpoint = "google/mt5-base"
     tokenizer = AutoTokenizer.from_pretrained(checkpoint)
 
     print("Tokenizing...", end="")
     eval_dataset = get_dataloader(tokenizer, category='test')
     print("Done")
 
-    print(eval_dataset[[0,2,3]])
+
+    print(dict(eval_dataset[[0,2,3]].to("cuda")))
+
+
+
     # print(eval_dataset['label'][[0,2,3]])
 
 # def load(indices, category='train'):
