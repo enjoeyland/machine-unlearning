@@ -80,7 +80,6 @@ from importlib import import_module
 from torch.nn import CrossEntropyLoss
 from torch.optim import Adam, SGD
 from torch.nn.functional import one_hot
-from torchmetrics import Accuracy
 
 from sharded import sizeOfShard, getShardHash, fetchShardBatch, fetchTestBatch, get_data_loader
 
@@ -119,9 +118,11 @@ if args.train:
     shard_size = sizeOfShard(args.container, args.shard)
     slice_size = shard_size // args.slices
     avg_epochs_per_slice = (2 * args.slices / (args.slices + 1) * args.epochs / args.slices)
+    assert avg_epochs_per_slice >= 1, "Not enough epochs per slice"
     loaded = False
 
     for sl in range(args.slices):
+        print(f"slice {sl}/{args.slices}")
         # Get slice hash using sharded lib.
         slice_hash = getShardHash(args.container, args.label, args.shard, until=(sl + 1) * slice_size)
 
