@@ -10,7 +10,7 @@ if __name__ == '__main__':
         f.write(json.dumps({
             "nb_train": len(dataset['train']),
             "nb_test": len(dataset['validation']),
-            "input_shape": [512], # max token length
+            "input_shape": 512, # max token length
             "nb_classes": len(set(dataset['train']['label'])),
             "dataloader": "dataloader"
         }, indent=4))

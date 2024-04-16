@@ -45,12 +45,9 @@ if args.shards != None:
                 for t in range(1, args.shards)
             ],
         )
-        np.save("containers/{}/splitfile.npy".format(args.container), np.array(partition, dtype=object))
+        np.save(f"containers/{args.container}/splitfile.npy", np.array(partition, dtype=object))
         requests = np.array([[] for _ in range(args.shards)])
-        np.save(
-            "containers/{}/requestfile:{}.npy".format(args.container, args.label),
-            requests,
-        )
+        np.save(f"containers/{args.container}/requestfile:{args.label}.npy", requests)
 
     # Else run PLS-GAP algorithm to find a low cost split.
     else:
@@ -156,15 +153,10 @@ if args.shards != None:
 if args.requests != None:
     if args.distribution == "reset":
         requests = np.array([[] for _ in range(partition.shape[0])])
-        np.save(
-            "containers/{}/requestfile:{}.npy".format(args.container, args.label),
-            requests,
-        )
+        np.save(f"containers/{args.container}/requestfile:{args.label}.npy", requests)
     else:
         # Load splitfile.
-        partition = np.load(
-            "containers/{}/splitfile.npy".format(args.container), allow_pickle=True
-        )
+        partition = np.load(f"containers/{args.container}/splitfile.npy", allow_pickle=True)
 
         # Randomly select points to be removed with given distribution at the dataset scale.
         if args.distribution.split(":")[0] == "exponential":
@@ -190,7 +182,4 @@ if args.requests != None:
             requests.append(np.intersect1d(partition[shard], all_requests))
 
         # Update requestfile.
-        np.save(
-            "containers/{}/requestfile:{}.npy".format(args.container, args.label),
-            np.array(requests, dtype=object),
-        )
+        np.save(f"containers/{args.container}/requestfile:{args.label}.npy", np.array(requests, dtype=object))

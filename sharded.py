@@ -35,32 +35,6 @@ def getShardHash(container, label, shard, until=None):
     string_of_indices = ':'.join(indices.astype(str))
     return sha256(string_of_indices.encode()).hexdigest()
 
-def fetchShardBatch2(container, label, shard, batch_size, tokenizer, dataset, offset=0, until=None):
-    '''
-    Generator returning batches of points in the shard that are not in the requests
-    with specified batch_size from the specified dataset
-    optionnally located between offset and until (slicing).
-    '''
-    _shard = get_shard(container, shard)
-    request = get_request(container, label, shard)
-    
-    with open(dataset) as f:
-        datasetfile = json.loads(f.read())
-    dataloader = importlib.import_module('.'.join(dataset.split('/')[:-1] + [datasetfile['dataloader']]))
-    dataloader = dataloader.get_dataloader(tokenizer, max_length=datasetfile['input_shape'][0], category='train')
-
-    if until == None or until > _shard.shape[0]:
-        until = _shard.shape[0]
-
-    limit = offset
-    while limit <= until - batch_size:
-        limit += batch_size
-        indices = np.setdiff1d(_shard[limit-batch_size:limit], request)
-        yield dataloader[indices]
-    if limit < until:
-        indices = np.setdiff1d(_shard[limit:until], request)
-        yield dataloader[indices]
-
 def fetchShardBatch(container, label, shard, batch_size, dataset, offset=0, until=None):
     '''
     Generator returning batches of points in the shard that are not in the requests
@@ -113,7 +87,7 @@ class ShardDataset(Dataset):
             datasetfile = json.loads(f.read())
 
         dataloader_module = importlib.import_module('.'.join(dataset_path.split('/')[:-1] + [datasetfile['dataloader']]))
-        self.dataloader = dataloader_module.get_dataloader(tokenizer, max_length=datasetfile['input_shape'][0], category='train')
+        self.dataset = dataloader_module.get_dataset(tokenizer, max_length=datasetfile['input_shape'], category='train')
 
         self.offset = offset
         self.until = until if until is not None else self.shard.shape[0]
@@ -127,7 +101,7 @@ class ShardDataset(Dataset):
             raise IndexError("Index out of the bounds of the data segment.")
         index = np.setdiff1d(self.shard[actual_idx], self.request)
         if len(index) > 0:
-            return self.dataloader[index]
+            return self.dataset[index]
         else:
             return None
 

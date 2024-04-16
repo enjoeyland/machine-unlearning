@@ -125,15 +125,13 @@ if args.train:
         # Get slice hash using sharded lib.
         slice_hash = getShardHash(args.container, args.label, args.shard, until=(sl + 1) * slice_size)
 
+        if os.path.exists(f"containers/{args.container}/cache/{slice_hash}.pt"):
+            continue
 
         # Initialize state.
         elapsed_time = 0
         start_epoch = 0
         slice_epochs = int((sl + 1) * avg_epochs_per_slice) - int(sl * avg_epochs_per_slice)
-
-        # If this is the first slice, no need to load anything.
-        if sl == 0:
-            loaded = True
         
         # If weights are already in memory (from previous slice), skip loading.
         if not loaded:
@@ -183,6 +181,7 @@ if args.train:
                     forward_start_time = time()
 
                     # Perform basic training step.
+                    
                     logits = model(gpu_inputs)
                     loss = loss_fn(logits, gpu_labels)
 
@@ -208,8 +207,9 @@ if args.train:
                         forward_start_time = time()
 
                         # Perform basic training step.
-                        logits = model(**dict(inputs.to(device)))
-                        loss = logits.loss / accum_iter
+                        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                            logits = model(**dict(inputs.to(device)))
+                            loss = logits.loss / accum_iter
                         loss.backward()
 
                         if (batch_idx + 1) % accum_iter == 0 or batch_idx + 1 == len(dataloader):

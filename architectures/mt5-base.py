@@ -1,6 +1,6 @@
-from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
 checkpoint = "google/mt5-base"
 
 tokenizer = AutoTokenizer.from_pretrained(checkpoint)
-model = AutoModelForSeq2SeqLM.from_pretrained(checkpoint).bfloat16()
+model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=3)
