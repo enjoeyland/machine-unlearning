@@ -96,10 +96,7 @@ with open(args.dataset) as f:
 nb_classes = datasetfile["nb_classes"]
 
 # Instantiate model and send to selected device.
-if hasattr(model_lib, 'Model'):
-    input_shape = tuple(datasetfile["input_shape"])
-    model = model_lib.Model(input_shape, nb_classes, dropout_rate=args.dropout_rate).to(device)
-elif hasattr(model_lib, 'model'):
+if hasattr(model_lib, 'model'):
     model = model_lib.model.to(device)
     tokenizer = model_lib.tokenizer
 else:
@@ -122,7 +119,7 @@ if args.train:
     loaded = False
 
     for sl in range(args.slices):
-        print(f"slice {sl}/{args.slices}")
+        print(f"slice {sl+1}/{args.slices}")
         # Get slice hash using sharded lib.
         slice_hash = getShardHash(args.container, args.label, args.shard, until=(sl + 1) * slice_size)
 
@@ -165,60 +162,33 @@ if args.train:
         for epoch in range(start_epoch, slice_epochs):
             epoch_start_time = time()
 
-            if hasattr(model_lib, 'Model'):
-                for inputs, labels in fetchShardBatch(
-                    args.container,
-                    args.label,
-                    args.shard,
-                    args.batch_size,
-                    args.dataset,
-                    until=(sl + 1) * slice_size if sl < args.slices - 1 else None,
-                ):
+    
+            dataloader = get_data_loader(
+                args.container,
+                args.label,
+                args.shard,
+                args.batch_size,
+                tokenizer,
+                args.dataset,
+                until=(sl + 1) * slice_size if sl < args.slices - 1 else None,
+            )
 
-                    # Convert data to torch format and send to selected device.
-                    gpu_inputs = torch.from_numpy(inputs).to(device)  # pylint: disable=no-member
-                    gpu_labels = torch.from_numpy(labels).to(device)  # pylint: disable=no-member
-
+            with tqdm(dataloader) as pbar:
+                for batch_idx, inputs in enumerate(pbar):
                     forward_start_time = time()
 
                     # Perform basic training step.
-                    
-                    logits = model(gpu_inputs)
-                    loss = loss_fn(logits, gpu_labels)
-
-                    optimizer.zero_grad()
+                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                        logits = model(**dict(inputs.to(device)))
+                        loss = logits.loss / accum_iter
                     loss.backward()
 
-                    optimizer.step()
+                    if (batch_idx + 1) % accum_iter == 0 or batch_idx + 1 == len(dataloader):
+                        optimizer.step()
+                        optimizer.zero_grad()
 
+                    pbar.set_postfix(loss=f"{loss.item():.4f}")
                     train_time += time() - forward_start_time
-            else:
-                dataloader = get_data_loader(
-                    args.container,
-                    args.label,
-                    args.shard,
-                    args.batch_size,
-                    tokenizer,
-                    args.dataset,
-                    until=(sl + 1) * slice_size if sl < args.slices - 1 else None,
-                )
-
-                with tqdm(dataloader) as pbar:
-                    for batch_idx, inputs in enumerate(pbar):
-                        forward_start_time = time()
-
-                        # Perform basic training step.
-                        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-                            logits = model(**dict(inputs.to(device)))
-                            loss = logits.loss / accum_iter
-                        loss.backward()
-
-                        if (batch_idx + 1) % accum_iter == 0 or batch_idx + 1 == len(dataloader):
-                            optimizer.step()
-                            optimizer.zero_grad()
-
-                        pbar.set_postfix(loss=f"{loss.item():.4f}")
-                        train_time += time() - forward_start_time
 
             # Create a checkpoint every chkpt_interval.
             if (args.chkpt_interval != -1 and epoch % args.chkpt_interval == args.chkpt_interval - 1):
