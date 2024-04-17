@@ -19,13 +19,13 @@ class XNLIEnDataset(Dataset):
 
     def __len__(self):
         return len(self.data)
-    
 
+dataset = load_dataset("xnli", 'en')
 
-def get_dataset(tokenizer, max_length=256, category='train'):
+def get_dataset(tokenizer, max_length, category='train'):
     category = 'validation' if category == 'test' else category
-    dataset = load_dataset("xnli", 'en')
     return XNLIEnDataset(tokenizer, dataset[category], max_length)
+
 
 if __name__ == "__main__":
     from transformers import AutoTokenizer

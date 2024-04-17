@@ -73,6 +73,9 @@ def train(args):
     else:
         raise "Unsupported model"
 
+    train_dataset = args.dataloader_module.get_dataset(tokenizer, max_length=args.max_length, category='train')
+    eval_dataset = args.dataloader_module.get_dataset(tokenizer, max_length=args.max_length, category='validation')
+
     # Instantiate loss and optimizer.
     if args.optimizer == "adam":
         optimizer = Adam(model.parameters(), lr=args.learning_rate)
@@ -129,8 +132,7 @@ def train(args):
                 args.label,
                 args.shard,
                 args.batch_size,
-                tokenizer,
-                args,
+                train_dataset,
                 until=(sl + 1) * slice_size if sl < args.slices - 1 else None,
             )
 
@@ -213,10 +215,7 @@ def train(args):
             f"containers/{args.container}/cache/shard{args.shard}_label{args.label}.json")
 
 
-
-
-
-def test(args, model=None, tokenizer=None):
+def test(args, model=None, dataset=None):
     num_classes = args.num_classes
     device = args.device
 
@@ -232,7 +231,14 @@ def test(args, model=None, tokenizer=None):
             model = model_lib.model
             model.load_state_dict(torch.load(f"containers/{args.container}/cache/shard{args.shard}_label{args.label}.pt"))
             model.to(device)
+        else:
+            raise "Unsupported model"
+
+    if dataset is None:
+        model_lib = import_module("architectures.{}".format(args.model))
+        if hasattr(model_lib, 'model'):
             tokenizer = model_lib.tokenizer
+            dataset = args.dataloader_module.get_dataset(tokenizer, max_length=args.max_length, category='validation')
         else:
             raise "Unsupported model"
 
@@ -245,10 +251,9 @@ def test(args, model=None, tokenizer=None):
     predictions = torch.tensor([])
     references = torch.tensor([])
     loss = 0
-    dataloader = val_dataloader(
+    dataloader = eval_dataloader(
         args.batch_size,
-        tokenizer,
-        args,
+        dataset,
     )
     with torch.no_grad():
         for batch_idx, inputs in enumerate(tqdm(dataloader)):
