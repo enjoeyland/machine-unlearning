@@ -1,3 +1,4 @@
+import gc
 import os
 import json
 import torch
@@ -16,7 +17,7 @@ from torch.nn import CrossEntropyLoss
 from torch.optim import Adam, SGD
 from torch.nn.functional import one_hot
 
-from sharded import sizeOfShard, getShardHash, shard_dataloader, val_dataloader
+from sharded import sizeOfShard, shard_dataloader, eval_dataloader
 from transformers import set_seed
 
 def add_arguments(parser):
@@ -73,7 +74,6 @@ def train(args):
         raise "Unsupported model"
 
     # Instantiate loss and optimizer.
-    loss_fn = CrossEntropyLoss()
     if args.optimizer == "adam":
         optimizer = Adam(model.parameters(), lr=args.learning_rate)
     elif args.optimizer == "sgd":
@@ -85,18 +85,18 @@ def train(args):
     slice_size = shard_size // args.slices
     avg_epochs_per_slice = (2 * args.slices / (args.slices + 1) * args.epochs / args.slices)
     loaded = False
-
+    best_model_state = None
+    train_state = {"loss": 0.0, "eval_accuracy": 0.0, "eval_loss": 0.0, "slice": 0, "model_step": 0, "step": 0, "time": 0.0}
     for sl in range(args.slices):
+        train_state["slice"] = sl
         print(f"slice {sl+1}/{args.slices}")
         # Get slice hash using sharded lib.
-        # slice_hash = getShardHash(args.container, args.label, args.shard, until=(sl + 1) * slice_size)
         slice_name = f"shard{args.shard}_label{args.label}_slice{sl}_until{(sl + 1) * slice_size}"
 
         if os.path.exists(f"containers/{args.container}/cache/{slice_name}.pt"):
             continue
 
         # Initialize state.
-        elapsed_time = 0
         start_epoch = 0
         slice_epochs = int((sl + 1) * avg_epochs_per_slice) - int(sl * avg_epochs_per_slice)
         
@@ -106,30 +106,24 @@ def train(args):
             recovery_list = glob(f"containers/{args.container}/cache/{slice_name}_epoch*.pt")
             if len(recovery_list) > 0:
                 print(f"Recovery checkpoint found for shard {args.shard} on slice {sl}")
-
-                # Load weights.
-                model.load_state_dict(torch.load(recovery_list[-1]))
-                start_epoch = int(recovery_list[-1].split("/")[-1].split(".")[0].split("_")[1])
-
-                # Load time
-                with open(f"containers/{args.container}/times/{slice_name}_epoch{start_epoch}.time","r") as f:
-                    elapsed_time = float(f.read())
+                start_epoch = int(recovery_list[-1].split("/")[-1].split(".")[0].split("_epoch")[1])
+                model.load_state_dict(torch.load(f"containers/{args.container}/cache/{slice_name}_epoch{start_epoch}.pt"))
+                best_model_state = deepcopy(model.state_dict())
+                gc.collect()
+                train_state = json.load(open(f"containers/{args.container}/cache/{slice_name}_epoch{start_epoch}.json", "r"))
 
             # If there is no recovery checkpoint and this slice is not the first, load previous slice.
             elif sl > 0:
-                previous_slice_hash = getShardHash(args.container, args.label, args.shard, until=sl * slice_size)
-                # Load weights.
-                model.load_state_dict(torch.load(f"containers/{args.container}/cache/{previous_slice_hash}.pt"))
+                previous_slice_name = f"shard{args.shard}_label{args.label}_slice{sl}_until{sl * slice_size}"
+                model.load_state_dict(torch.load(f"containers/{args.container}/cache/{previous_slice_name}.pt"))
+                best_model_state = deepcopy(model.state_dict())
+                gc.collect()
+                train_state = json.load(open(f"containers/{args.container}/cache/{previous_slice_name}.json", "r"))
 
             # Mark model as loaded for next slices.
             loaded = True
 
-        best_accuracy = 0.0
-        best_model_state = None
-        train_time = 0.0
         for epoch in range(start_epoch, slice_epochs):
-            epoch_start_time = time()
-
             dataloader = shard_dataloader(
                 args.container,
                 args.label,
@@ -141,6 +135,8 @@ def train(args):
             )
 
             for batch_idx, inputs in enumerate(tqdm(dataloader)):
+                model.train()
+                train_state["step"] += 1
                 forward_start_time = time()
 
                 if args.bf16:
@@ -156,62 +152,65 @@ def train(args):
                     optimizer.step()
                     optimizer.zero_grad()
 
-                train_time += time() - forward_start_time
+                train_state["time"] += time() - forward_start_time
 
                 if args.logging_steps > 0 and (batch_idx + 1) % args.logging_steps == 0:
-                    wandb.log({"train":{"loss": loss.item(), "slice": sl}}, step=batch_idx + 1)
+                    train_state["loss"] = loss.item()
+                    wandb.log({"train":{"loss": loss.item(), "slice": sl}}, step=train_state["step"])
 
                 if args.evaluation_steps > 0 and (batch_idx + 1) % args.evaluation_steps == 0:
-                    results = test(args, model=model, tokenizer=tokenizer)
-                    wandb.log({"eval": results}, step=batch_idx + 1)
+                    results = test(args, model=model, dataset=eval_dataset)
+                    wandb.log({"eval": results}, step=train_state["step"])
 
-                    if args.load_best_model_at_end and results["accuracy"] > best_accuracy:
-                        best_accuracy = results["accuracy"]
+                    if args.load_best_model_at_end and results["accuracy"] > train_state["val_accuracy"]:
                         best_model_state = deepcopy(model.state_dict())
+                        gc.collect()
+                        train_state["eval_accuracy"] = results["accuracy"]
+                        train_state["eval_loss"] = results["loss"]
+                        train_state["model_step"] = train_state["step"]
                
             else:
-                wandb.log({"train":{"loss": loss.item(), "slice": sl}}, step=batch_idx + 1)
+                wandb.log({"train":{"loss": loss.item(), "slice": sl}}, step=train_state["step"])
 
                 results = test(args, model=model, tokenizer=tokenizer)
-                wandb.log({"eval": results}, step=batch_idx + 1)
+                wandb.log({"eval": results}, step=train_state["step"])
 
-                if args.load_best_model_at_end and results["accuracy"] > best_accuracy:
-                    best_accuracy = results["accuracy"]
+                if args.load_best_model_at_end and results["accuracy"] > train_state["accuracy"]:
                     best_model_state = deepcopy(model.state_dict())
+                    gc.collect()
+                    train_state["eval_accuracy"] = results["accuracy"]
+                    train_state["eval_loss"] = results["loss"]
+                    train_state["model_step"] = train_state["step"]
             
                 if args.load_best_model_at_end:
                     torch.save(best_model_state, f"containers/{args.container}/cache/{slice_name}_epoch{epoch}.pt")
-
+                    json.dump(train_state, open(f"containers/{args.container}/cache/{slice_name}_epoch{epoch}.json", "w"))
                 else:
                     torch.save(model.state_dict(), f"containers/{args.container}/cache/{slice_name}_epoch{epoch}.pt")
-                with open(f"containers/{args.container}/times/{slice_name}_epoch{epoch}.time","w") as f:
-                    f.write("{}\n".format(train_time + elapsed_time))
-
-                # with open(f"containers/{args.container}/times/{slice_hash}_{epoch}_{batch_idx+1}.time","w") as f:
-                #     f.write("{}\n".format(train_time + elapsed_time))
+                    train_state["eval_accuracy"] = results["accuracy"]
+                    train_state["eval_loss"] = results["loss"]
+                    train_state["model_step"] = train_state["step"]
+                    json.dump(train_state, open(f"containers/{args.container}/cache/{slice_name}_epoch{epoch}.json", "w"))
                 
 
         else:
             if args.save_strategies != "no":
                 # When training is complete, save slice.
-                if args.load_best_model_at_end:
-                    pass
-                else:
-                    torch.save(model.state_dict(), f"containers/{args.container}/cache/{slice_name}.pt")
-                with open(f"containers/{args.container}/times/{slice_name}.time", "w") as f:
-                    f.write(f"{train_time + elapsed_time}\n")
+                os.rename(f"containers/{args.container}/cache/{slice_name}_epoch{epoch}.pt",
+                        f"containers/{args.container}/cache/{slice_name}.pt")
+                os.rename(f"containers/{args.container}/cache/{slice_name}_epoch{epoch}.json",
+                    f"containers/{args.container}/cache/{slice_name}.json")
 
                 # Remove previous checkpoint.
                 for previous_chkpt in glob(f"containers/{args.container}/cache/{slice_name}_epoch*.pt"):
                     os.remove(previous_chkpt)
-                for previous_chkpt in glob(f"containers/{args.container}/times/{slice_name}_epoch*.time"):
-                    os.remove(previous_chkpt)
+
     else:
         # If this is the last slice, create a symlink attached to it.
         os.symlink(f"{slice_name}.pt",
             f"containers/{args.container}/cache/shard{args.shard}_label{args.label}.pt")
-        os.symlink(f"{slice_name}.time",
-            f"containers/{args.container}/times/shard{args.shard}_label{args.label}.time")
+        os.symlink(f"{slice_name}.json",
+            f"containers/{args.container}/cache/shard{args.shard}_label{args.label}.json")
 
 
 
