@@ -3,7 +3,7 @@ from datasets import load_dataset
 from torch.utils.data import Dataset
 from transformers import BatchEncoding
 
-class XNLIDataset(Dataset):
+class XNLIEnDataset(Dataset):
     def __init__(self, tokenizer, data, max_length):
         self.tokenizer = tokenizer
         self.data = data
@@ -11,6 +11,7 @@ class XNLIDataset(Dataset):
 
         self.encodings = self.tokenizer(self.data['premise'], self.data['hypothesis'], truncation=True, padding='max_length', max_length=self.max_length, return_tensors='pt')
         self.encodings['labels'] = torch.tensor(self.data['label'])
+        self.num_classes = len(set(self.data['label']))
 
     def __getitem__(self, idx):
         item  = {key: val[idx].squeeze() for key, val in self.encodings.items()}
@@ -18,12 +19,13 @@ class XNLIDataset(Dataset):
 
     def __len__(self):
         return len(self.data)
+    
 
 
 def get_dataset(tokenizer, max_length=256, category='train'):
     category = 'validation' if category == 'test' else category
     dataset = load_dataset("xnli", 'en')
-    return XNLIDataset(tokenizer, dataset[category], max_length)
+    return XNLIEnDataset(tokenizer, dataset[category], max_length)
 
 if __name__ == "__main__":
     from transformers import AutoTokenizer

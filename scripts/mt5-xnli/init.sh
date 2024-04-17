@@ -15,7 +15,7 @@ fi
 
 python distribution.py --shards "${shards}" --distribution uniform --container "xnli-en-${shards}" --dataset data/xnli-en/datasetfile --label 0
 
-for j in {1..15}; do
+for j in {1..1}; do
     r=$((${j}*${shards}/5))
     python distribution.py --requests "${r}" --distribution uniform --container "xnli-en-${shards}" --dataset data/xnli-en/datasetfile --label "${r}"
 done

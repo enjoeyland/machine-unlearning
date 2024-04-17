@@ -79,15 +79,11 @@ def fetchTestBatch(dataset, batch_size):
 from torch.utils.data import Dataset, DataLoader
 
 class ShardDataset(Dataset):
-    def __init__(self, container, label, shard, tokenizer, dataset_path, offset=0, until=None):
+    def __init__(self, container, label, shard, tokenizer, args, offset=0, until=None):
         self.shard = get_shard(container, shard)
         self.request = get_request(container, label, shard)
 
-        with open(dataset_path) as f:
-            datasetfile = json.loads(f.read())
-
-        dataloader_module = importlib.import_module('.'.join(dataset_path.split('/')[:-1] + [datasetfile['dataloader']]))
-        self.dataset = dataloader_module.get_dataset(tokenizer, max_length=datasetfile['input_shape'], category='train')
+        self.dataset = args.dataloader_module.get_dataset(tokenizer, max_length=args.max_length, category='train')
 
         self.offset = offset
         self.until = until if until is not None else self.shard.shape[0]
@@ -105,7 +101,12 @@ class ShardDataset(Dataset):
         else:
             return None
 
-def get_data_loader(container, label, shard, batch_size, tokenizer, dataset_path, offset=0, until=None):
-    dataset = ShardDataset(container, label, shard, tokenizer, dataset_path, offset, until)
+def shard_dataloader(container, label, shard, batch_size, tokenizer, args, offset=0, until=None):
+    dataset = ShardDataset(container, label, shard, tokenizer, args, offset, until)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)  # shuffle을 True로 설정할 수도 있음
+    return loader
+
+def val_dataloader(batch_size, tokenizer, args):
+    dataset = args.dataloader_module.get_dataset(tokenizer, max_length=args.max_length, category='validation')
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)  # shuffle을 True로 설정할 수도 있음
     return loader
