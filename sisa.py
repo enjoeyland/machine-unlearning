@@ -1,4 +1,3 @@
-import gc
 import os
 import json
 import torch
@@ -112,7 +111,8 @@ def train(args):
                 start_epoch = int(recovery_list[-1].split("/")[-1].split(".")[0].split("_epoch")[1])
                 model.load_state_dict(torch.load(f"containers/{args.container}/cache/{slice_name}_epoch{start_epoch}.pt"))
                 best_model_state = deepcopy(model.state_dict())
-                gc.collect()
+                for k, v in best_model_state.items():
+                    best_model_state[k] = v.cpu()
                 train_state = json.load(open(f"containers/{args.container}/cache/{slice_name}_epoch{start_epoch}.json", "r"))
 
             # If there is no recovery checkpoint and this slice is not the first, load previous slice.
@@ -120,7 +120,8 @@ def train(args):
                 previous_slice_name = f"shard{args.shard}_label{args.label}_slice{sl}_until{sl * slice_size}"
                 model.load_state_dict(torch.load(f"containers/{args.container}/cache/{previous_slice_name}.pt"))
                 best_model_state = deepcopy(model.state_dict())
-                gc.collect()
+                for k, v in best_model_state.items():
+                    best_model_state[k] = v.cpu()
                 train_state = json.load(open(f"containers/{args.container}/cache/{previous_slice_name}.json", "r"))
 
             # Mark model as loaded for next slices.
@@ -164,9 +165,10 @@ def train(args):
                     results = test(args, model=model, dataset=eval_dataset)
                     wandb.log({"eval": results}, step=train_state["step"])
 
-                    if args.load_best_model_at_end and results["accuracy"] > train_state["val_accuracy"]:
+                    if args.load_best_model_at_end and results["accuracy"] > train_state["eval_accuracy"]:
                         best_model_state = deepcopy(model.state_dict())
-                        gc.collect()
+                        for k, v in best_model_state.items():
+                            best_model_state[k] = v.cpu()
                         train_state["eval_accuracy"] = results["accuracy"]
                         train_state["eval_loss"] = results["loss"]
                         train_state["model_step"] = train_state["step"]
@@ -177,14 +179,17 @@ def train(args):
                 results = test(args, model=model, tokenizer=tokenizer)
                 wandb.log({"eval": results}, step=train_state["step"])
 
-                if args.load_best_model_at_end and results["accuracy"] > train_state["accuracy"]:
+                if args.load_best_model_at_end and results["accuracy"] > train_state["eval_accuracy"]:
                     best_model_state = deepcopy(model.state_dict())
-                    gc.collect()
+                    for k, v in best_model_state.items():
+                        best_model_state[k] = v.cpu()
                     train_state["eval_accuracy"] = results["accuracy"]
                     train_state["eval_loss"] = results["loss"]
                     train_state["model_step"] = train_state["step"]
             
                 if args.load_best_model_at_end:
+                    for k, v in best_model_state.items():
+                        best_model_state[k] = v.to(device)
                     torch.save(best_model_state, f"containers/{args.container}/cache/{slice_name}_epoch{epoch}.pt")
                     json.dump(train_state, open(f"containers/{args.container}/cache/{slice_name}_epoch{epoch}.json", "w"))
                 else:
