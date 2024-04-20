@@ -6,7 +6,7 @@ IFS=$'\n\t'
 container=$1
 shards=5
 
-for i in $(seq 0 "$((${shards}-1))"); do
+for i in $(seq 0 2); do
     echo "shard: $((${i}+1))/${shards}"
     r=0
     python sisa.py \
