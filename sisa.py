@@ -178,7 +178,7 @@ def train(args):
                     # last epoch
                     wandb.log({"train":{"loss": outputs.loss.item(), "slice": sl}}, step=train_state["step"])
 
-                    results = test(args, model=model, tokenizer=tokenizer)
+                    results = test(args, model=model, dataset=eval_dataset)
                     wandb.log({"eval": results}, step=train_state["step"])
 
                     if args.load_best_model_at_end and results["accuracy"] > train_state["eval_accuracy"]:
