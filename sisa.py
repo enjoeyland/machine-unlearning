@@ -286,7 +286,7 @@ def test(args, model=None, dataset=None):
     if save:
         np.save(f"containers/{args.container}/outputs/shard{args.shard}_label{args.label}.npy", all_outputs.numpy())
     
-    return {"loss": loss, "accuracy": accuracy}
+    return {"loss": loss.item(), "accuracy": accuracy.item()}
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
