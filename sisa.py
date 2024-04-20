@@ -13,7 +13,7 @@ from copy import deepcopy
 from importlib import import_module
 
 from torch.nn import CrossEntropyLoss
-from torch.optim import Adam, SGD
+from torch.optim import AdamW, Adam, SGD
 from torch.nn.functional import one_hot
 
 from sharded import sizeOfShard, shard_dataloader, eval_dataloader
@@ -78,6 +78,8 @@ def train(args):
     # Instantiate loss and optimizer.
     if args.optimizer == "adam":
         optimizer = Adam(model.parameters(), lr=args.learning_rate)
+    elif args.optimizer == "adamw":
+        optimizer = AdamW(model.parameters(), lr=args.learning_rate)
     elif args.optimizer == "sgd":
         optimizer = SGD(model.parameters(), lr=args.learning_rate)
     else:
@@ -85,7 +87,7 @@ def train(args):
 
     shard_size = sizeOfShard(args.container, args.shard)
     slice_size = shard_size // args.slices
-    avg_epochs_per_slice = (2 * args.slices / (args.slices + 1) * args.epochs / args.slices)
+    avg_epochs_per_slice = (2 * args.epochs / (args.slices + 1)) # See paper for explanation.
     loaded = False
     best_model_state = None
     train_state = {"loss": 0.0, "eval_accuracy": 0.0, "eval_loss": 0.0, "slice": 0, "model_step": 0, "step": 0, "time": 0.0}
@@ -117,7 +119,7 @@ def train(args):
 
             # If there is no recovery checkpoint and this slice is not the first, load previous slice.
             elif sl > 0:
-                previous_slice_name = f"shard{args.shard}_label{args.label}_slice{sl}_until{sl * slice_size}"
+                previous_slice_name = f"shard{args.shard}_label{args.label}_slice{sl-1}_until{sl * slice_size}"
                 model.load_state_dict(torch.load(f"containers/{args.container}/cache/{previous_slice_name}.pt"))
                 best_model_state = deepcopy(model.state_dict())
                 for k, v in best_model_state.items():
@@ -136,33 +138,47 @@ def train(args):
                 train_dataset,
                 until=(sl + 1) * slice_size if sl < args.slices - 1 else None,
             )
+            with tqdm(dataloader) as pbar:
+                for batch_idx, inputs in enumerate(pbar):
+                    model.train()
+                    model.float()
+                    train_state["step"] += 1
+                    forward_start_time = time()
 
-            for batch_idx, inputs in enumerate(tqdm(dataloader)):
-                model.train()
-                train_state["step"] += 1
-                forward_start_time = time()
-
-                if args.bf16:
-                    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+                    with torch.autocast(device_type=args.device.type, dtype=torch.bfloat16, enabled=args.bf16):
                         outputs = model(**dict(inputs.to(device)))
                         loss = outputs.loss / args.gradient_accumulation_steps
+                    loss.backward()
+
+                    if (batch_idx + 1) % args.gradient_accumulation_steps == 0 or batch_idx + 1 == len(dataloader):
+                        optimizer.step()
+                        optimizer.zero_grad()
+
+                    train_state["time"] += time() - forward_start_time
+                    pbar.set_postfix({"loss": outputs.loss.item()})
+
+                    if args.logging_steps > 0 and (batch_idx + 1) % args.logging_steps == 0:
+                        train_state["loss"] = outputs.loss.item()
+                        wandb.log({"train":{"loss": outputs.loss.item(), "slice": sl}}, step=train_state["step"])
+
+                    if args.evaluation_steps > 0 and (batch_idx + 1) % args.evaluation_steps == 0:
+                        results = test(args, model=model, dataset=eval_dataset)
+                        wandb.log({"eval": results}, step=train_state["step"])
+                        print(f"Step {train_state['step']}: {results}")
+
+                        if args.load_best_model_at_end and results["accuracy"] > train_state["eval_accuracy"]:
+                            best_model_state = deepcopy(model.state_dict())
+                            for k, v in best_model_state.items():
+                                best_model_state[k] = v.cpu()
+                            train_state["eval_accuracy"] = results["accuracy"]
+                            train_state["eval_loss"] = results["loss"]
+                            train_state["model_step"] = train_state["step"]
+               
                 else:
-                    outputs = model(**dict(inputs.to(device)))
-                    loss = outputs.loss / args.gradient_accumulation_steps
-                loss.backward()
+                    # last epoch
+                    wandb.log({"train":{"loss": outputs.loss.item(), "slice": sl}}, step=train_state["step"])
 
-                if (batch_idx + 1) % args.gradient_accumulation_steps == 0 or batch_idx + 1 == len(dataloader):
-                    optimizer.step()
-                    optimizer.zero_grad()
-
-                train_state["time"] += time() - forward_start_time
-
-                if args.logging_steps > 0 and (batch_idx + 1) % args.logging_steps == 0:
-                    train_state["loss"] = loss.item()
-                    wandb.log({"train":{"loss": loss.item(), "slice": sl}}, step=train_state["step"])
-
-                if args.evaluation_steps > 0 and (batch_idx + 1) % args.evaluation_steps == 0:
-                    results = test(args, model=model, dataset=eval_dataset)
+                    results = test(args, model=model, tokenizer=tokenizer)
                     wandb.log({"eval": results}, step=train_state["step"])
 
                     if args.load_best_model_at_end and results["accuracy"] > train_state["eval_accuracy"]:
@@ -172,35 +188,24 @@ def train(args):
                         train_state["eval_accuracy"] = results["accuracy"]
                         train_state["eval_loss"] = results["loss"]
                         train_state["model_step"] = train_state["step"]
-               
-            else:
-                wandb.log({"train":{"loss": loss.item(), "slice": sl}}, step=train_state["step"])
-
-                results = test(args, model=model, tokenizer=tokenizer)
-                wandb.log({"eval": results}, step=train_state["step"])
-
-                if args.load_best_model_at_end and results["accuracy"] > train_state["eval_accuracy"]:
-                    best_model_state = deepcopy(model.state_dict())
-                    for k, v in best_model_state.items():
-                        best_model_state[k] = v.cpu()
-                    train_state["eval_accuracy"] = results["accuracy"]
-                    train_state["eval_loss"] = results["loss"]
-                    train_state["model_step"] = train_state["step"]
-            
-                if args.load_best_model_at_end:
-                    for k, v in best_model_state.items():
-                        best_model_state[k] = v.to(device)
-                    torch.save(best_model_state, f"containers/{args.container}/cache/{slice_name}_epoch{epoch}.pt")
-                    json.dump(train_state, open(f"containers/{args.container}/cache/{slice_name}_epoch{epoch}.json", "w"))
-                else:
-                    torch.save(model.state_dict(), f"containers/{args.container}/cache/{slice_name}_epoch{epoch}.pt")
-                    train_state["eval_accuracy"] = results["accuracy"]
-                    train_state["eval_loss"] = results["loss"]
-                    train_state["model_step"] = train_state["step"]
-                    json.dump(train_state, open(f"containers/{args.container}/cache/{slice_name}_epoch{epoch}.json", "w"))
+                
+                    if args.load_best_model_at_end:
+                        for k, v in best_model_state.items():
+                            best_model_state[k] = v.to(device)
+                        torch.save(best_model_state, f"containers/{args.container}/cache/{slice_name}_epoch{epoch}.pt")
+                        for k, v in best_model_state.items():
+                            best_model_state[k] = v.cpu()
+                        json.dump(train_state, open(f"containers/{args.container}/cache/{slice_name}_epoch{epoch}.json", "w"))
+                    else:
+                        torch.save(model.state_dict(), f"containers/{args.container}/cache/{slice_name}_epoch{epoch}.pt")
+                        train_state["eval_accuracy"] = results["accuracy"]
+                        train_state["eval_loss"] = results["loss"]
+                        train_state["model_step"] = train_state["step"]
+                        json.dump(train_state, open(f"containers/{args.container}/cache/{slice_name}_epoch{epoch}.json", "w"))
                 
 
         else:
+            # last slice
             if args.save_strategies != "no":
                 # When training is complete, save slice.
                 os.rename(f"containers/{args.container}/cache/{slice_name}_epoch{epoch}.pt",
@@ -281,7 +286,6 @@ def test(args, model=None, dataset=None):
     if save:
         np.save(f"containers/{args.container}/outputs/shard{args.shard}_label{args.label}.npy", all_outputs.numpy())
     
-    model.float()
     return {"loss": loss, "accuracy": accuracy}
 
 if __name__ == "__main__":

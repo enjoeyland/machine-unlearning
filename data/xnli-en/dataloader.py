@@ -9,7 +9,13 @@ class XNLIEnDataset(Dataset):
         self.data = data
         self.max_length = max_length
 
-        self.encodings = self.tokenizer(self.data['premise'], self.data['hypothesis'], truncation=True, padding='max_length', max_length=self.max_length, return_tensors='pt')
+        self.encodings = self.tokenizer(
+            data['premise'], data['hypothesis'],
+            max_length=self.max_length,
+            truncation=True,
+            padding='max_length',
+            return_tensors='pt'
+        )
         self.encodings['labels'] = torch.tensor(self.data['label'])
         self.num_classes = len(set(self.data['label']))
 
