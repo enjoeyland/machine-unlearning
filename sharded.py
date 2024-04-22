@@ -1,13 +1,30 @@
+import os
 import numpy as np
 from hashlib import sha256
 import importlib
 import json
 
 def get_shard(container, shard):
-    return np.load(f'containers/{container}/splitfile.npy', allow_pickle=True)[shard]
+    if os.path.exists(f'containers/{container}/splitfile.npy'):
+        return np.load(f'containers/{container}/splitfile.npy', allow_pickle=True)[shard]
+    elif os.path.exists(f'containers/{container}/splitfile.jsonl'):
+        with open(f'containers/{container}/splitfile.jsonl') as f:
+            shards = f.readlines()
+        shards = [json.loads(shard) for shard in shards]
+        return np.array(shards[shard])
+    else:
+        raise FileNotFoundError(f'containers/{container}/splitfile.npy or containers/{container}/splitfile.jsonl')
 
 def get_request(container, label, shard):
-    return np.load(f'containers/{container}/requestfile:{label}.npy', allow_pickle=True)[shard]
+    if os.path.exists(f'containers/{container}/requestfile:{label}.npy'):
+        return np.load(f'containers/{container}/requestfile:{label}.npy', allow_pickle=True)[shard]
+    elif os.path.exists(f'containers/{container}/requestfile:{label}.jsonl'):
+        with open(f'containers/{container}/requestfile:{label}.jsonl') as f:
+            requests = f.readlines()
+        requests = [json.loads(request) for request in requests]
+        return np.array(requests[shard])
+    else:
+        return np.array([])
 
 def sizeOfShard(container, shard):
     '''
@@ -103,9 +120,11 @@ class ShardDataset(Dataset):
 
 def shard_dataloader(container, label, shard, batch_size, dataset, offset=0, until=None):
     shard_dataset = ShardDataset(container, label, shard, dataset, offset, until)
-    loader = DataLoader(shard_dataset, batch_size=batch_size, shuffle=False)  # shuffle을 True로 설정할 수도 있음
+    loader = DataLoader(shard_dataset, batch_size=batch_size, shuffle=True)
     return loader
 
+def train_dataloader(batch_size, dataset):
+    return DataLoader(dataset, batch_size=batch_size, shuffle=True)
+
 def eval_dataloader(batch_size, dataset):
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)  # shuffle을 True로 설정할 수도 있음
-    return loader
+    return DataLoader(dataset, batch_size=batch_size, shuffle=False)
