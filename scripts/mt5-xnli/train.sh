@@ -24,10 +24,10 @@ for i in $(seq 0 "$((${shards}-1))"); do
         --batch_size 8 \
         --gradient_accumulation_steps 4 \
         --logging_steps 100 \
-        --evaluation_steps 500 \
+        --evaluation_strategy epoch \
+        --bf16_full_eval \
+        --output_type argmax \
         --load_best_model_at_end \
         --epochs 3 \
-        --slices 5 \
-        --bf16_full_eval \
-        --output_type argmax
+        --slices 5 
 done

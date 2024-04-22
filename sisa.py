@@ -45,18 +45,33 @@ def add_arguments(parser):
     parser.add_argument("--batch_size", default=16, type=int, help="Batch size, default 16")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
 
-    parser.add_argument("--save_strategies", default="epoch", help="Save strategies, default epoch")
-    parser.add_argument("--logging_steps", type=int, default=10)
-    parser.add_argument("--evaluation_steps", type=int, default=50)
-    parser.add_argument("--load_best_model_at_end", action="store_true", help="Load the best model at the end of training, default False")
-    parser.add_argument("--overwrite_output_dir", action="store_true", help="Overwrite the output directory, default False")
-
     parser.add_argument("--epochs", default=20, type=int, help="Train for the specified number of epochs, default 20")
     parser.add_argument("--slices", default=1, type=int, help="Number of slices to use, default 1")
 
+    parser.add_argument("--logging_steps", type=int, default=10)
+
+    parser.add_argument("--evaluation_strategy", default="steps", choices=["steps", "epoch", "no"], help="Evaluation strategy, default steps")
+    parser.add_argument("--eval_steps", type=int, default=50)
     parser.add_argument("--bf16_full_eval", action="store_true", help="Use full evaluation in bf16, default False")
     parser.add_argument("--output_type", default="argmax", help="Type of outputs to be used in aggregation, can be either argmax or softmax, default argmax")
+    
+    parser.add_argument("--save_strategies", default="epoch", choices=["epoch", "no"], help="Save strategies, default epoch")
+    parser.add_argument("--load_best_model_at_end", action="store_true", help="Load the best model at the end of training, default False")
+    parser.add_argument("--overwrite_output_dir", action="store_true", help="Overwrite the output directory, default False")
 
+def update_train_state(train_state, results, model):
+    if not args.load_best_model_at_end:
+        train_state["eval_accuracy"] = results["accuracy"]
+        train_state["eval_loss"] = results["loss"]
+        train_state["eval_model_step"] = train_state["step"]
+    elif results["accuracy"] > train_state["eval_accuracy"]:
+        best_model_state = deepcopy(model.state_dict())
+        for k, v in best_model_state.items():
+            best_model_state[k] = v.cpu()
+        train_state["eval_accuracy"] = results["accuracy"]
+        train_state["eval_loss"] = results["loss"]
+        train_state["save_model_step"] = train_state["step"]
+        train_state["eval_model_step"] = train_state["step"]
 
 def train(args):
     device = args.device
@@ -90,7 +105,7 @@ def train(args):
     avg_epochs_per_slice = (2 * args.epochs / (args.slices + 1)) # See paper for explanation.
     loaded = False
     best_model_state = None
-    train_state = {"loss": 0.0, "eval_accuracy": 0.0, "eval_loss": 0.0, "slice": 0, "model_step": 0, "step": 0, "time": 0.0}
+    train_state = {"loss": 0.0, "eval_accuracy": 0.0, "eval_loss": 0.0, "slice": 0, "eval_model_step": 0, "step": 0, "time": 0.0, "save_model_step": 0}
     for sl in range(args.slices):
         train_state["slice"] = sl
         print(f"slice {sl+1}/{args.slices}")
@@ -161,52 +176,41 @@ def train(args):
                         train_state["loss"] = outputs.loss.item()
                         wandb.log({"train":{"loss": outputs.loss.item(), "slice": sl}}, step=train_state["step"])
 
-                    if args.evaluation_steps > 0 and (batch_idx + 1) % args.evaluation_steps == 0:
+                    if args.evaluation_strategy == "steps" and args.eval_steps > 0 and train_state["step"] % args.eval_steps == 0:
                         results = test(args, model=model, dataset=eval_dataset)
                         wandb.log({"eval": results}, step=train_state["step"])
                         print(f"Step {train_state['step']}: {results}")
 
-                        if args.load_best_model_at_end and results["accuracy"] > train_state["eval_accuracy"]:
-                            best_model_state = deepcopy(model.state_dict())
-                            for k, v in best_model_state.items():
-                                best_model_state[k] = v.cpu()
-                            train_state["eval_accuracy"] = results["accuracy"]
-                            train_state["eval_loss"] = results["loss"]
-                            train_state["model_step"] = train_state["step"]
+                        update_train_state(train_state, results, model)
                
                 else:
-                    # last epoch
+                    # after one epoch
                     wandb.log({"train":{"loss": outputs.loss.item(), "slice": sl}}, step=train_state["step"])
 
-                    results = test(args, model=model, dataset=eval_dataset)
-                    wandb.log({"eval": results}, step=train_state["step"])
+                    if args.evaluation_strategy == "epochs":
+                        results = test(args, model=model, dataset=eval_dataset)
+                        wandb.log({"eval": results}, step=train_state["step"])
+                        print(f"Step {train_state['step']}: {results}")
 
-                    if args.load_best_model_at_end and results["accuracy"] > train_state["eval_accuracy"]:
-                        best_model_state = deepcopy(model.state_dict())
-                        for k, v in best_model_state.items():
-                            best_model_state[k] = v.cpu()
-                        train_state["eval_accuracy"] = results["accuracy"]
-                        train_state["eval_loss"] = results["loss"]
-                        train_state["model_step"] = train_state["step"]
-                
-                    if args.load_best_model_at_end:
-                        for k, v in best_model_state.items():
-                            best_model_state[k] = v.to(device)
-                        torch.save(best_model_state, f"containers/{args.container}/cache/{slice_name}_epoch{epoch}.pt")
-                        for k, v in best_model_state.items():
-                            best_model_state[k] = v.cpu()
-                        json.dump(train_state, open(f"containers/{args.container}/cache/{slice_name}_epoch{epoch}.json", "w"))
-                    else:
-                        torch.save(model.state_dict(), f"containers/{args.container}/cache/{slice_name}_epoch{epoch}.pt")
-                        train_state["eval_accuracy"] = results["accuracy"]
-                        train_state["eval_loss"] = results["loss"]
-                        train_state["model_step"] = train_state["step"]
-                        json.dump(train_state, open(f"containers/{args.container}/cache/{slice_name}_epoch{epoch}.json", "w"))
+                        update_train_state(train_state, results, model)
+                    
+                    if args.save_strategies == "epoch":
+                        if args.load_best_model_at_end:
+                            for k, v in best_model_state.items():
+                                best_model_state[k] = v.to(device)
+                            torch.save(best_model_state, f"containers/{args.container}/cache/{slice_name}_epoch{epoch}.pt")
+                            for k, v in best_model_state.items():
+                                best_model_state[k] = v.cpu()
+                            json.dump(train_state, open(f"containers/{args.container}/cache/{slice_name}_epoch{epoch}.json", "w"))
+                        else:
+                            torch.save(model.state_dict(), f"containers/{args.container}/cache/{slice_name}_epoch{epoch}.pt")
+                            train_state["save_model_step"] = train_state["step"]
+                            json.dump(train_state, open(f"containers/{args.container}/cache/{slice_name}_epoch{epoch}.json", "w"))
                 
 
         else:
-            # last slice
-            if args.save_strategies != "no":
+            # after one slice
+            if args.save_strategies == "epoch":
                 # When training is complete, save slice.
                 os.rename(f"containers/{args.container}/cache/{slice_name}_epoch{epoch}.pt",
                         f"containers/{args.container}/cache/{slice_name}.pt")
@@ -218,7 +222,7 @@ def train(args):
                     os.remove(previous_chkpt)
 
     else:
-        # If this is the last slice, create a symlink attached to it.
+        # after one shard
         os.symlink(f"{slice_name}.pt",
             f"containers/{args.container}/cache/shard{args.shard}_label{args.label}.pt")
         os.symlink(f"{slice_name}.json",
