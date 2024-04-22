@@ -165,14 +165,14 @@ def train(args):
                         loss = outputs.loss / args.gradient_accumulation_steps
                     loss.backward()
 
-                    if (batch_idx + 1) % args.gradient_accumulation_steps == 0 or batch_idx + 1 == len(dataloader):
+                    if train_state["step"] % args.gradient_accumulation_steps == 0 or batch_idx + 1 == len(dataloader):
                         optimizer.step()
                         optimizer.zero_grad()
 
                     train_state["time"] += time() - forward_start_time
                     pbar.set_postfix({"loss": outputs.loss.item()})
 
-                    if args.logging_steps > 0 and (batch_idx + 1) % args.logging_steps == 0:
+                    if args.logging_steps > 0 and train_state["step"] % args.logging_steps == 0:
                         train_state["loss"] = outputs.loss.item()
                         wandb.log({"train":{"loss": outputs.loss.item(), "slice": sl}}, step=train_state["step"])
 
