@@ -59,7 +59,7 @@ def add_arguments(parser):
     parser.add_argument("--load_best_model_at_end", action="store_true", help="Load the best model at the end of training, default False")
     parser.add_argument("--overwrite_output_dir", action="store_true", help="Overwrite the output directory, default False")
 
-def update_train_state(train_state, results, model):
+def update_train_state(train_state, results, model, best_model_state):
     if not args.load_best_model_at_end:
         train_state["eval_accuracy"] = results["accuracy"]
         train_state["eval_loss"] = results["loss"]
@@ -72,7 +72,8 @@ def update_train_state(train_state, results, model):
         train_state["eval_loss"] = results["loss"]
         train_state["save_model_step"] = train_state["step"]
         train_state["eval_model_step"] = train_state["step"]
-
+    return best_model_state
+    
 def train(args):
     device = args.device
     set_seed(args.seed)
@@ -181,7 +182,7 @@ def train(args):
                         wandb.log({"eval": results}, step=train_state["step"])
                         print(f"Step {train_state['step']}: {results}")
 
-                        update_train_state(train_state, results, model)
+                        best_model_state = update_train_state(train_state, results, model, best_model_state)
                
                 else:
                     # after one epoch
@@ -192,7 +193,7 @@ def train(args):
                         wandb.log({"eval": results}, step=train_state["step"])
                         print(f"Step {train_state['step']}: {results}")
 
-                        update_train_state(train_state, results, model)
+                        best_model_state = update_train_state(train_state, results, model, best_model_state)
                     
                     if args.save_strategies == "epoch":
                         if args.load_best_model_at_end:

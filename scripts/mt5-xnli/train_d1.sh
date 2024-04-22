@@ -23,11 +23,11 @@ for i in $(seq 0 2); do
         --learning_rate 5e-5 \
         --batch_size 8 \
         --gradient_accumulation_steps 4 \
-        --logging_steps 100 \
-        --evaluation_strategy epoch \
+        --logging_steps 500 \
+        --eval_steps 500 \
         --bf16_full_eval \
         --output_type argmax \
         --load_best_model_at_end \
-        --epochs 3 \
-        --slices 5 
+        --epochs 5 \
+        --slices 9 
 done
