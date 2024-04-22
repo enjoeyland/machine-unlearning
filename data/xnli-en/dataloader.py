@@ -29,7 +29,6 @@ class XNLIEnDataset(Dataset):
 dataset = load_dataset("xnli", 'en')
 
 def get_dataset(tokenizer, max_length, category='train'):
-    category = 'validation' if category == 'test' else category
     return XNLIEnDataset(tokenizer, dataset[category], max_length)
 
 

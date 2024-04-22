@@ -128,3 +128,6 @@ def train_dataloader(batch_size, dataset):
 
 def eval_dataloader(batch_size, dataset):
     return DataLoader(dataset, batch_size=batch_size, shuffle=False)
+
+def test_dataloader(batch_size, dataset):
+    return DataLoader(dataset, batch_size=batch_size, shuffle=False)
